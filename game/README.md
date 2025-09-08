@@ -20,7 +20,17 @@ Brain-Computer Interface game controlled by eye movements (EOG) based on researc
 
 ## 🚀 Quick Start
 
-### Option 1: Standalone Game Test
+### Option 1: Full EOG Integration (MAIN USE CASE)
+```bash
+# Terminal 1: Start EOG processor
+python main.py
+
+# Terminal 2: Start game (MAIN ENTRY POINT)
+cd game
+python main.py
+```
+
+### Option 2: Standalone Game Test  
 ```bash
 cd game
 python test_standalone.py
@@ -29,7 +39,7 @@ python test_standalone.py
 - Use arrow keys to test movement
 - Game connects to EOG server automatically if available
 
-### Option 2: Full EOG Integration
+### Option 3: Mock EOG Testing
 ```bash
 # Terminal 1: Start mock EOG server
 cd game
@@ -37,17 +47,7 @@ python test_complete.py
 
 # Terminal 2: Start game
 cd game  
-python test_standalone.py
-```
-
-### Option 3: Real EOG Control
-```bash
-# Terminal 1: Start EOG processor
 python main.py
-
-# Terminal 2: Start game
-cd game
-python test_standalone.py
 ```
 
 ## 🎯 Game Controls

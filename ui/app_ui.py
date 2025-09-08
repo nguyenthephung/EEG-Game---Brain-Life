@@ -20,6 +20,10 @@ class BLEApp:
         self.chart_manager = EOGChartManager(self.root)
         self.eog_processor = EOGProcessor(self.decoder, self.chart_manager)
         self.websocket_server = WebSocketServer(self.loop, self.eog_processor)
+        
+        # 🎮 Start game TCP server for EOG commands
+        self.eog_processor.start_game_server()
+        
         self.running = True
         self.game_active = False
         self.setup_ui()
@@ -143,6 +147,9 @@ class BLEApp:
         
         # Close BLE connection
         self.disconnect_device()
+        
+        # 🎮 Stop game TCP server
+        self.eog_processor.stop_game_server()
         
         # Close WebSocket server properly
         try:

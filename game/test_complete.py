@@ -58,12 +58,12 @@ def start_mock_eog_server():
         
         print("📡 Mock EOG TCP Server started on localhost:8766")
         
-        # Send test commands
+        # Send test commands (EOG classes that processor actually sends)
         commands = [
-            "idle", "left", "left", "idle", 
-            "right", "right", "idle",
-            "blink", "center", "up", "down",
-            "left", "right", "idle"
+            "center", "left", "left", "center", 
+            "right", "right", "center",
+            "blink", "center", "up", "down",  # These will map to idle
+            "left", "right", "center"
         ]
         
         print("🧠 Starting command sequence...")

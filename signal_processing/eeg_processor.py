@@ -391,6 +391,9 @@ class EOGProcessor:
             # Fallback to simple detection
             eye_movement = self.detect_eye_movement(Y1, Y2)
         
+        # 🎮 Send command to game (IMPORTANT!)
+        self.send_command_to_game(eye_movement)
+        
         # Update UI labels
         direction_label.config(text=f"Eye Movement: {eye_movement.upper()}")
         
