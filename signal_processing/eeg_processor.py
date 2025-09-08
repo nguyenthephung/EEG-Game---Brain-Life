@@ -42,6 +42,10 @@ class EOGProcessor:
             'velocity': 100.0
         }
         
+        # TCP server for game communication
+        self.tcp_server = None
+        self.game_connected = False
+        
         print("🔧 EOG Processor initialized for eye movement detection")
 
     def preprocess_eog_signal(self, signal):
@@ -489,3 +493,45 @@ class EOGProcessor:
         
         if hasattr(self, 'calibration_data'):
             delattr(self, 'calibration_data')
+    
+    def start_game_server(self):
+        """Start TCP server for game communication"""
+        try:
+            # Import here to avoid circular imports
+            import sys
+            import os
+            sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'game'))
+            from eog_tcp_server import EOGTCPServer
+            
+            self.tcp_server = EOGTCPServer(self)
+            
+            # Start server in separate thread
+            import threading
+            server_thread = threading.Thread(target=self.tcp_server.start, daemon=True)
+            server_thread.start()
+            
+            self.game_connected = True
+            print("🎮 Game TCP Server started - Ready for game connection")
+            
+        except Exception as e:
+            print(f"❌ Failed to start game server: {e}")
+            self.game_connected = False
+    
+    def send_command_to_game(self, command: str):
+        """Send EOG command to connected game"""
+        if self.tcp_server and self.game_connected:
+            try:
+                self.tcp_server.send_command(command)
+                print(f"🎮 Sent to game: {command}")
+            except Exception as e:
+                print(f"❌ Failed to send command to game: {e}")
+        # else:
+        #     print(f"🎮 Game not connected - Command: {command}")
+    
+    def stop_game_server(self):
+        """Stop the game TCP server"""
+        if self.tcp_server:
+            self.tcp_server.stop()
+            self.tcp_server = None
+            self.game_connected = False
+            print("🎮 Game TCP Server stopped")
