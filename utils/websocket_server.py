@@ -26,11 +26,21 @@ class WebSocketServer:
                 pass
 
         async def start_server():
-            self.websocket_server = await websockets.serve(handle_client, "localhost", 8765)
+            self.server = await websockets.serve(handle_client, "localhost", 8765)
             print("🌐 WebSocket server started on ws://localhost:8765")
 
         asyncio.run_coroutine_threadsafe(start_server(), self.loop)
 
     def close(self):
-        if self.websocket_server:
-            self.websocket_server.close()
+        """Properly close the WebSocket server"""
+        if hasattr(self, 'server') and self.server:
+            try:
+                # Close the server
+                self.server.close()
+                # Wait for it to close (schedule on the event loop)
+                asyncio.run_coroutine_threadsafe(self.server.wait_closed(), self.loop)
+            except Exception as e:
+                print(f"Error closing WebSocket server: {e}")
+        
+        # Clear connected clients
+        self.connected_clients.clear()

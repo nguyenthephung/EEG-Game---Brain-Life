@@ -4,22 +4,22 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from ble.ble_manager import BLEManager
 from ble.ble_decoder import BLEPacketDecoder
-from ui.chart_manager import ChartManager
-from signal_processing.eeg_processor import EEGProcessor
+from ui.chart_manager import EOGChartManager
+from signal_processing.eeg_processor import EOGProcessor
 from utils.websocket_server import WebSocketServer
 
 class BLEApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("BrainLife EEG Maze Controller")
+        self.root.title("BrainLife EOG Eye Tracker")
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
         self.ble_manager = BLEManager(self.loop)
         self.decoder = BLEPacketDecoder()
-        self.chart_manager = ChartManager(self.root)
-        self.eeg_processor = EEGProcessor(self.decoder, self.chart_manager)
-        self.websocket_server = WebSocketServer(self.loop, self.eeg_processor)
+        self.chart_manager = EOGChartManager(self.root)
+        self.eog_processor = EOGProcessor(self.decoder, self.chart_manager)
+        self.websocket_server = WebSocketServer(self.loop, self.eog_processor)
         self.running = True
         self.game_active = False
         self.setup_ui()
@@ -41,15 +41,15 @@ class BLEApp:
         self.device_list.heading("address", text="Address")
         self.device_list.grid(row=1, column=0, columnspan=3, pady=5)
 
-        # Game Control Frame
-        game_frame = tk.LabelFrame(main_frame, text="Game Control", font=("Arial", 10))
-        game_frame.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        tk.Button(game_frame, text="▶️ Start Game", command=self.start_game).grid(row=0, column=0, padx=5)
-        tk.Button(game_frame, text="⏹ Stop Game", command=self.stop_game).grid(row=0, column=1, padx=5)
-        tk.Button(game_frame, text="🧠 Calibrate", command=self.eeg_processor.calibrate).grid(row=0, column=2, padx=5)
-        self.direction_label = tk.Label(game_frame, text="Direction: None", font=("Arial", 12))
+        # EOG Control Frame
+        eog_frame = tk.LabelFrame(main_frame, text="EOG Eye Tracking", font=("Arial", 10))
+        eog_frame.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        tk.Button(eog_frame, text="▶️ Start Tracking", command=self.start_game).grid(row=0, column=0, padx=5)
+        tk.Button(eog_frame, text="⏹ Stop Tracking", command=self.stop_game).grid(row=0, column=1, padx=5)
+        tk.Button(eog_frame, text="👁️ Calibrate EOG", command=self.eog_processor.calibrate).grid(row=0, column=2, padx=5)
+        self.direction_label = tk.Label(eog_frame, text="Eye Movement: None", font=("Arial", 12))
         self.direction_label.grid(row=1, column=0, columnspan=3, pady=5)
-        self.mental_label = tk.Label(game_frame, text="Mental State: Unknown", font=("Arial", 12))
+        self.mental_label = tk.Label(eog_frame, text="EOG Status: Unknown", font=("Arial", 12))
         self.mental_label.grid(row=2, column=0, columnspan=3, pady=5)
 
         # Log Frame
@@ -58,11 +58,14 @@ class BLEApp:
         self.log = tk.Text(log_frame, height=10, width=75, bg="#1e1e1e", fg="#00ff00", insertbackground="white")
         self.log.grid(row=0, column=0, pady=5)
 
-        self.chart_manager.setup_charts(main_frame)
+        self.chart_manager.initialize_charts()
 
     def log_message(self, msg):
-        self.log.insert(tk.END, msg + "\n")
-        self.log.see(tk.END)
+        try:
+            self.log.insert(tk.END, msg + "\n")
+            self.log.see(tk.END)
+        except Exception:
+            pass
 
     def scan_devices(self):
         self.log_message("🔍 Scanning for 'BrainLife Focus+' BLE devices...")
@@ -111,7 +114,7 @@ class BLEApp:
             if result:
                 signal_type, value = result
                 self.log_message(f"[{signal_type}] {value}")
-                self.eeg_processor.process_eeg_data(self.mental_label, self.direction_label)
+                self.eog_processor.process_eog_data(self.mental_label, self.direction_label)
                 self.decoder.clear_noise()
 
     def disconnect_device(self):
@@ -122,21 +125,52 @@ class BLEApp:
     def start_game(self):
         if self.ble_manager.ble_client:
             self.game_active = True
-            self.log_message("🎮 Game started - EEG processing active")
+            self.log_message("🎮 EOG Detection started - Eye tracking active")
             self.ble_manager.send_start_command()
 
     def stop_game(self):
         if self.ble_manager.ble_client:
             self.game_active = False
-            self.log_message("⏹ Game stopped - EEG processing paused")
-            self.direction_label.config(text="Direction: Stopped")
-            self.mental_label.config(text="Mental State: Paused")
+            self.log_message("⏹ EOG Detection stopped - Eye tracking paused")
+            self.direction_label.config(text="Eye Movement: Stopped")
+            self.mental_label.config(text="EOG Status: Paused")
             self.ble_manager.send_stop_command()
 
     def on_closing(self):
+        """Properly close all async tasks and connections"""
         self.running = False
+        self.game_active = False
+        
+        # Close BLE connection
         self.disconnect_device()
-        self.websocket_server.close()
+        
+        # Close WebSocket server properly
+        try:
+            asyncio.run_coroutine_threadsafe(self._close_websocket(), self.loop)
+        except Exception as e:
+            print(f"Error closing websocket: {e}")
+        
+        # Stop the event loop
         if self.loop and not self.loop.is_closed():
-            self.loop.call_soon_threadsafe(self.loop.stop)
+            try:
+                # Cancel all pending tasks
+                pending_tasks = asyncio.all_tasks(self.loop)
+                for task in pending_tasks:
+                    task.cancel()
+                
+                # Stop the loop
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            except Exception as e:
+                print(f"Error stopping loop: {e}")
+        
+        # Destroy the UI
         self.root.destroy()
+    
+    async def _close_websocket(self):
+        """Async helper to properly close websocket"""
+        try:
+            if hasattr(self.websocket_server, 'server') and self.websocket_server.server:
+                self.websocket_server.server.close()
+                await self.websocket_server.server.wait_closed()
+        except Exception as e:
+            print(f"Error in websocket close: {e}")
