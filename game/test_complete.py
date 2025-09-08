@@ -62,8 +62,9 @@ def start_mock_eog_server():
         commands = [
             "center", "left", "left", "center", 
             "right", "right", "center",
-            "blink", "center", "up", "down",  # These will map to idle
-            "left", "right", "center"
+            "blink", "center", "up", "down",  # Blink will fire bullets!
+            "left", "blink", "right", "center",  # More blink commands
+            "blink", "blink", "left", "right"   # Test rapid firing
         ]
         
         print("🧠 Starting command sequence...")

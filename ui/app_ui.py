@@ -46,15 +46,33 @@ class BLEApp:
         self.device_list.grid(row=1, column=0, columnspan=3, pady=5)
 
         # EOG Control Frame
-        eog_frame = tk.LabelFrame(main_frame, text="EOG Eye Tracking", font=("Arial", 10))
+        eog_frame = tk.LabelFrame(main_frame, text="Brain Signal Processing", font=("Arial", 10))
         eog_frame.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        tk.Button(eog_frame, text="▶️ Start Tracking", command=self.start_game).grid(row=0, column=0, padx=5)
-        tk.Button(eog_frame, text="⏹ Stop Tracking", command=self.stop_game).grid(row=0, column=1, padx=5)
-        tk.Button(eog_frame, text="👁️ Calibrate EOG", command=self.eog_processor.calibrate).grid(row=0, column=2, padx=5)
-        self.direction_label = tk.Label(eog_frame, text="Eye Movement: None", font=("Arial", 12))
-        self.direction_label.grid(row=1, column=0, columnspan=3, pady=5)
-        self.mental_label = tk.Label(eog_frame, text="EOG Status: Unknown", font=("Arial", 12))
-        self.mental_label.grid(row=2, column=0, columnspan=3, pady=5)
+        
+        # Mode Selection
+        mode_frame = tk.Frame(eog_frame)
+        mode_frame.grid(row=0, column=0, columnspan=3, pady=5)
+        tk.Label(mode_frame, text="Mode:").pack(side=tk.LEFT)
+        self.processing_mode = tk.StringVar(value="EOG")
+        tk.Radiobutton(mode_frame, text="👁️ EOG (Eye Movement)", variable=self.processing_mode, 
+                      value="EOG").pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(mode_frame, text="🧠 EEG (Alpha/Beta)", variable=self.processing_mode, 
+                      value="EEG").pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(mode_frame, text="🔀 Hybrid (Both)", variable=self.processing_mode, 
+                      value="HYBRID").pack(side=tk.LEFT, padx=5)
+        
+        # Control Buttons
+        control_frame = tk.Frame(eog_frame)
+        control_frame.grid(row=1, column=0, columnspan=3, pady=5)
+        tk.Button(control_frame, text="▶️ Start Tracking", command=self.start_game).pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="⏹ Stop Tracking", command=self.stop_game).pack(side=tk.LEFT, padx=5)
+        tk.Button(control_frame, text="👁️ Calibrate", command=self.calibrate_system).pack(side=tk.LEFT, padx=5)
+        
+        # Status Labels
+        self.direction_label = tk.Label(eog_frame, text="Movement: None", font=("Arial", 12))
+        self.direction_label.grid(row=2, column=0, columnspan=3, pady=5)
+        self.mental_label = tk.Label(eog_frame, text="Status: Unknown", font=("Arial", 12))
+        self.mental_label.grid(row=3, column=0, columnspan=3, pady=5)
 
         # Log Frame
         log_frame = tk.LabelFrame(main_frame, text="Log", font=("Arial", 10))
@@ -118,7 +136,17 @@ class BLEApp:
             if result:
                 signal_type, value = result
                 self.log_message(f"[{signal_type}] {value}")
-                self.eog_processor.process_eog_data(self.mental_label, self.direction_label)
+                
+                # 🧠 Process based on selected mode
+                mode = self.processing_mode.get()
+                if mode == "EOG":
+                    self.eog_processor.process_eog_data(self.mental_label, self.direction_label)
+                elif mode == "EEG":
+                    self.eog_processor.process_eeg_legacy(self.mental_label, self.direction_label)
+                elif mode == "HYBRID":
+                    direction = self.eog_processor.hybrid_detection(use_eeg=True, use_eog=True)
+                    self.direction_label.config(text=f"Movement: {direction}")
+                
                 self.decoder.clear_noise()
 
     def disconnect_device(self):
@@ -126,10 +154,20 @@ class BLEApp:
             asyncio.run_coroutine_threadsafe(self.ble_manager.disconnect(), self.loop)
             self.log_message("❎ Disconnected.")
 
+    def calibrate_system(self):
+        """Calibrate based on selected mode"""
+        mode = self.processing_mode.get()
+        if mode in ["EOG", "HYBRID"]:
+            self.eog_processor.calibrate()
+            self.log_message("👁️ EOG calibration started")
+        else:
+            self.log_message("🧠 EEG mode - calibration not required")
+
     def start_game(self):
         if self.ble_manager.ble_client:
             self.game_active = True
-            self.log_message("🎮 EOG Detection started - Eye tracking active")
+            mode = self.processing_mode.get()
+            self.log_message(f"🎮 {mode} Detection started - Brain tracking active")
             self.ble_manager.send_start_command()
 
     def stop_game(self):

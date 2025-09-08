@@ -10,6 +10,8 @@ from typing import Optional, List, Tuple
 # Import game components
 from character import Character
 from meteor import Meteor, MeteorSpawner
+from reward import Reward, RewardSpawner
+from bullet import Bullet, BulletManager
 from eog_client import EOGClient
 from game_evaluator import GameEvaluator
 
@@ -60,8 +62,15 @@ class MeteorDodgeGame:
         self.character = Character()
         self.meteors = []
         self.meteor_spawner = MeteorSpawner(SCREEN_WIDTH)
+        self.reward_spawner = RewardSpawner(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.bullet_manager = BulletManager()
         self.eog_client = EOGClient(self)
         self.evaluator = GameEvaluator()
+        
+        # Game scoring
+        self.score = 0
+        self.rewards_collected = 0
+        self.meteors_avoided = 0
         
         # Command system
         self.last_command = "idle"
@@ -127,8 +136,17 @@ class MeteorDodgeGame:
         self.character.reset()
         self.meteors.clear()
         self.meteor_spawner.reset()
+        self.reward_spawner.clear_all()
+        self.bullet_manager.clear_all()
+        self.bullet_manager.reset_stats()
         self.evaluator.reset()
         self.command_history.clear()
+        
+        # Reset scoring
+        self.score = 0
+        self.rewards_collected = 0
+        self.meteors_avoided = 0
+        
         print("🔄 Game Reset")
     
     def process_eog_command(self, command: str):
@@ -156,7 +174,13 @@ class MeteorDodgeGame:
         elif command == "right":
             self.character.move_right()
             self.evaluator.record_command("right", self.character.x)
-        else:  # idle, up, down, blink, center
+        elif command == "blink":
+            # 👁️ BLINK = FIRE BULLET!
+            bullet_fired = self.bullet_manager.fire_bullet(self.character.x, self.character.y)
+            if bullet_fired:
+                print("💥 Bullet fired!")
+            self.evaluator.record_command("blink", self.character.x)
+        else:  # idle, up, down, center
             self.character.stop()
             self.evaluator.record_command("idle", self.character.x)
         
@@ -203,7 +227,39 @@ class MeteorDodgeGame:
             # Remove meteors that hit ground
             if meteor.y > SCREEN_HEIGHT:
                 self.meteors.remove(meteor)
-            
+                self.meteors_avoided += 1  # Count avoided meteors
+        
+        # 🎁 Update rewards
+        self.reward_spawner.update(dt)
+        
+        # 💥 Update bullets
+        self.bullet_manager.update(dt)
+        
+        # 🎯 Check bullet-reward collisions
+        bullet_reward_collisions = self.bullet_manager.check_reward_collisions(
+            self.reward_spawner.get_active_rewards()
+        )
+        
+        # Process reward hits
+        for bullet_idx, reward_idx in bullet_reward_collisions:
+            reward = self.reward_spawner.rewards[reward_idx]
+            reward.collect()
+            self.score += reward.value
+            self.rewards_collected += 1
+            print(f"🎯 Reward shot! +{reward.value} points | Total: {self.score}")
+        
+        # Check direct character-reward collisions (backup collection method)
+        character_rect = self.character.get_rect()
+        for reward in self.reward_spawner.get_active_rewards():
+            reward_rect = reward.get_rect()
+            if character_rect.colliderect(reward_rect):
+                reward.collect()
+                self.score += reward.value // 2  # Half points for direct collection
+                self.rewards_collected += 1
+                print(f"🎁 Reward collected! +{reward.value//2} points | Total: {self.score}")
+        
+        # Check meteor-character collisions (separate loop)
+        for meteor in self.meteors[:]:
             # Check collision with character
             if self.character.check_collision(meteor):
                 self.evaluator.record_collision(meteor.x, self.character.x)
@@ -273,6 +329,12 @@ class MeteorDodgeGame:
         for meteor in self.meteors:
             meteor.draw(self.screen)
         
+        # 🎁 Draw rewards
+        self.reward_spawner.draw(self.screen)
+        
+        # 💥 Draw bullets
+        self.bullet_manager.draw(self.screen)
+        
         # Draw UI
         self.draw_hud()
     
@@ -288,26 +350,46 @@ class MeteorDodgeGame:
         text = self.small_font.render(speed_text, True, WHITE)
         self.screen.blit(text, (10, 35))
         
-        # Score and metrics
-        score_text = f"Score: {self.evaluator.get_score()}"
-        text = self.small_font.render(score_text, True, WHITE)
+        # 🎯 New scoring system
+        total_score_text = f"Total Score: {self.score}"
+        text = self.small_font.render(total_score_text, True, YELLOW)
         self.screen.blit(text, (10, 60))
         
-        # Performance metrics
+        rewards_text = f"Rewards Shot: {self.rewards_collected}"
+        text = self.small_font.render(rewards_text, True, (255, 215, 0))  # Gold
+        self.screen.blit(text, (10, 85))
+        
+        meteors_text = f"Meteors Avoided: {self.meteors_avoided}"
+        text = self.small_font.render(meteors_text, True, GREEN)
+        self.screen.blit(text, (10, 110))
+        
+        # 💥 Shooting accuracy
+        accuracy = self.bullet_manager.get_accuracy()
+        accuracy_text = f"Shooting Accuracy: {accuracy:.1f}%"
+        text = self.small_font.render(accuracy_text, True, (0, 255, 255))  # Cyan
+        self.screen.blit(text, (10, 135))
+        
+        # Performance metrics (EOG evaluation)
         metrics = self.evaluator.get_metrics()
         if metrics:
-            precision_text = f"Precision: {metrics['precision']:.1f}%"
-            sensitivity_text = f"Sensitivity: {metrics['sensitivity']:.1f}%"
-            specificity_text = f"Specificity: {metrics['specificity']:.1f}%"
+            precision_text = f"EOG Precision: {metrics['precision']:.1f}%"
+            sensitivity_text = f"EOG Sensitivity: {metrics['sensitivity']:.1f}%"
+            specificity_text = f"EOG Specificity: {metrics['specificity']:.1f}%"
             
             text = self.small_font.render(precision_text, True, GREEN)
-            self.screen.blit(text, (SCREEN_WIDTH - 200, 10))
+            self.screen.blit(text, (SCREEN_WIDTH - 220, 10))
             
             text = self.small_font.render(sensitivity_text, True, GREEN)
-            self.screen.blit(text, (SCREEN_WIDTH - 200, 35))
+            self.screen.blit(text, (SCREEN_WIDTH - 220, 35))
             
             text = self.small_font.render(specificity_text, True, GREEN)
-            self.screen.blit(text, (SCREEN_WIDTH - 200, 60))
+            self.screen.blit(text, (SCREEN_WIDTH - 220, 60))
+        
+        # 🎮 Game instructions
+        instructions_text = "BLINK to SHOOT • ← → to MOVE • SPACE to START"
+        text = self.small_font.render(instructions_text, True, WHITE)
+        text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50))
+        self.screen.blit(text, text_rect)
     
     def draw_pause_overlay(self):
         """Draw pause overlay"""

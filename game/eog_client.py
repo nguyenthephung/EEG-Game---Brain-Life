@@ -196,17 +196,20 @@ class EOGClient:
     
     def _map_eog_to_game_command(self, eog_command: str) -> str:
         """
-        Map 6 EOG classes to 3 game commands (research Table 2)
+        Map 6 EOG classes to game commands (Updated for shooting)
         
-        Research mapping:
-        - left, right → respective movement commands
-        - center, up, down, blink → idle command
+        Updated mapping:
+        - left, right → respective movement commands  
+        - blink → shoot bullets (NEW!)
+        - center, up, down → idle command
         """
         if eog_command == "left":
             return "left"
         elif eog_command == "right":
             return "right"
-        else:  # center, up, down, blink
+        elif eog_command == "blink":
+            return "blink"  # 👁️ BLINK = SHOOT!
+        else:  # center, up, down
             return "idle"
     
     def send_game_state(self, game_state: Dict[str, Any]):

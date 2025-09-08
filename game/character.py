@@ -178,6 +178,18 @@ class Character:
         
         return char_rect.colliderect(meteor_rect)
     
+    def get_rect(self) -> pygame.Rect:
+        """
+        Get character's collision rectangle
+        Returns pygame.Rect for collision detection
+        """
+        return pygame.Rect(
+            self.x - self.width // 2,
+            self.y - self.height,
+            self.width,
+            self.height
+        )
+    
     def reset(self):
         """Reset character to initial state"""
         self.x = 600  # Center position

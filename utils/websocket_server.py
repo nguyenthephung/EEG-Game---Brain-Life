@@ -9,6 +9,7 @@ class WebSocketServer:
         self.eeg_processor = eeg_processor
         self.websocket_server = None
         self.running = True
+        self.connected_clients = set()  # Track connected clients
 
     def start(self):
         async def handle_client(websocket, path):

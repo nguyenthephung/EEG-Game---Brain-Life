@@ -29,7 +29,7 @@ class EOGProcessor:
         self.movement_history = deque(maxlen=5)
         
         # Wavelet transform parameters
-        self.wavelet_name = 'haar'  # Haar wavelet as specified in research
+        self.wavelet_name = 'morl'  # Morlet wavelet (Haar has compatibility issues in PyWavelets 1.8.0)
         self.scales = np.arange(1, 32)  # Scale parameter 'a' range
         self.wavelet_window_ms = 200  # 200ms window for area calculation
         self.wavelet_window_samples = int(self.wavelet_window_ms * self.sampling_rate / 1000)
@@ -46,7 +46,103 @@ class EOGProcessor:
         self.tcp_server = None
         self.game_connected = False
         
+        # 📊 AF3/AF4 Chart Synchronization Buffer
+        self.sync_buffer = {
+            'af3_data': None,
+            'af4_data': None,
+            'af3_timestamp': None,
+            'af4_timestamp': None,
+            'sync_window_ms': 100,  # 100ms sync window
+            'last_chart_update': 0
+        }
+        
+        # 🧠 Alpha/Beta band processing (from legacy EEG code)
+        self.directions = deque(maxlen=10)
+        self.mental_state = "Unknown"
+        self.update_count = 0
+        self.beta_diff_buffer = deque(maxlen=50)
+        self.beta_diff_history = deque(maxlen=50)
+        
         print("🔧 EOG Processor initialized for eye movement detection")
+        print("🧠 Alpha/Beta band processing enabled")
+
+    def update_sync_buffer(self, channel, data, timestamp):
+        """Update sync buffer and trigger chart update when both channels ready"""
+        if channel == 'AF3':
+            self.sync_buffer['af3_data'] = data
+            self.sync_buffer['af3_timestamp'] = timestamp
+        elif channel == 'AF4':
+            self.sync_buffer['af4_data'] = data
+            self.sync_buffer['af4_timestamp'] = timestamp
+        
+        # Check if both channels have recent data
+        self.check_and_update_charts()
+
+    def check_and_update_charts(self):
+        """Update charts only when both AF3 and AF4 have synchronized data"""
+        current_time = time.time() * 1000  # milliseconds
+        
+        af3_data = self.sync_buffer['af3_data']
+        af4_data = self.sync_buffer['af4_data']
+        af3_time = self.sync_buffer['af3_timestamp']
+        af4_time = self.sync_buffer['af4_timestamp']
+        
+        # Check if both channels have data
+        if af3_data is None or af4_data is None:
+            return False
+        
+        # Check if timestamps are within sync window
+        if af3_time is None or af4_time is None:
+            return False
+            
+        time_diff = abs(af3_time - af4_time)
+        if time_diff > self.sync_buffer['sync_window_ms']:
+            return False  # Too much time difference, wait for newer data
+        
+        # � IMPROVED: Dynamic rate limiting based on data availability
+        time_since_last = current_time - self.sync_buffer['last_chart_update']
+        
+        # Adaptive rate limiting:
+        # - Fast updates when data changes significantly
+        # - Slower updates when data is stable  
+        min_interval = 33  # 33ms = ~30Hz max (better than 10Hz target)
+        
+        if time_since_last < min_interval:
+            return False
+        
+        # 📊 UPDATE CHARTS SYNCHRONOUSLY
+        try:
+            # Raw signals
+            if self.chart_manager and hasattr(self.chart_manager, 'update_raw_signals'):
+                latest_af3 = af3_data[-1] if len(af3_data) > 0 else 0
+                latest_af4 = af4_data[-1] if len(af4_data) > 0 else 0
+                self.chart_manager.update_raw_signals(latest_af3, latest_af4)
+                print(f"📊 [SYNC RAW] AF3: {latest_af3:.1f} | AF4: {latest_af4:.1f} | Δt: {time_diff:.1f}ms")
+            
+            # Alpha/Beta features
+            af3_features = self.extract_features(af3_data, ch_name="AF3")
+            af4_features = self.extract_features(af4_data, ch_name="AF4")
+            
+            if self.chart_manager and hasattr(self.chart_manager, 'update_chart'):
+                self.chart_manager.update_chart(
+                    af3_features["alpha"], af4_features["alpha"],
+                    af3_features["beta"], af4_features["beta"]
+                )
+                print(f"🧠 [SYNC ALPHA/BETA] AF3: α={af3_features['alpha']:.1f}, β={af3_features['beta']:.1f} | "
+                      f"AF4: α={af4_features['alpha']:.1f}, β={af4_features['beta']:.1f}")
+            
+            # Update timestamp
+            self.sync_buffer['last_chart_update'] = current_time
+            
+            # Clear buffer after successful update
+            self.sync_buffer['af3_data'] = None
+            self.sync_buffer['af4_data'] = None
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Chart sync update error: {e}")
+            return False
 
     def preprocess_eog_signal(self, signal):
         """Apply preprocessing filters according to research"""
@@ -125,7 +221,7 @@ class EOGProcessor:
         
         return Y1, Y2
 
-    def continuous_wavelet_transform(self, signal, wavelet='haar'):
+    def continuous_wavelet_transform(self, signal, wavelet='morl'):
         """
         Apply Continuous Wavelet Transform according to research formula:
         Ca,b(ω) = Ca,b = ∫ EEG(t) ψa,b(t) dt
@@ -135,14 +231,21 @@ class EOGProcessor:
             return None, None
             
         try:
-            # Apply CWT with Haar wavelet
-            coefs, frequencies = pywt.cwt(signal, self.scales, wavelet, 1/self.sampling_rate)
+            # 🔧 Fix PyWavelets compatibility issue
+            # Use correct CWT method
+            coefs, frequencies = pywt.cwt(signal, self.scales, wavelet, sampling_period=1/self.sampling_rate)
             
             # coefs shape: (scales, time_samples)
             return coefs, frequencies
         except Exception as e:
             print(f"CWT Error: {e}")
-            return None, None
+            # Fallback to basic wavelet
+            try:
+                coefs, frequencies = pywt.cwt(signal, self.scales, 'morl')
+                return coefs, frequencies
+            except Exception as e2:
+                print(f"CWT Fallback Error: {e2}")
+                return None, None
     
     def compute_wavelet_scalogram(self, coefs):
         """
@@ -239,10 +342,14 @@ class EOGProcessor:
             'scalogram_energy': 0
         }
 
-    def detect_eye_movement_wavelet(self, Y1_signal, Y2_signal):
+    def detect_eye_movement_wavelet(self, Y1_signal, Y2_signal=None):
         """
         Hierarchical classification using wavelet features for 6-class detection
         Based on research: fixed thresholds for 4 features with binary outputs
+        
+        Args:
+            Y1_signal: Either Y1 signal array OR dict {'AF3': af3_data, 'AF4': af4_data}
+            Y2_signal: Y2 signal array (if Y1_signal is not dict)
         """
         current_time = time.time()
         
@@ -250,9 +357,51 @@ class EOGProcessor:
         if current_time - self.last_detection_time < self.min_detection_interval:
             return self.current_movement
         
+        # Handle different input formats
+        if isinstance(Y1_signal, dict):
+            # Called with dict format: {'AF3': data, 'AF4': data}
+            af3_data = Y1_signal.get('AF3', [])
+            af4_data = Y1_signal.get('AF4', [])
+            
+            if len(af3_data) == 0 or len(af4_data) == 0:
+                return self.current_movement
+                
+            # Calculate Y1 (horizontal) and Y2 (vertical) from AF3/AF4
+            Y1_calculated = np.array(af3_data) - np.array(af4_data)  # Horizontal: left-right
+            Y2_calculated = (np.array(af3_data) + np.array(af4_data)) / 2  # Vertical: average
+            
+            y1_signal_to_use = Y1_calculated
+            y2_signal_to_use = Y2_calculated
+            
+        else:
+            # Called with separate Y1, Y2 arrays
+            y1_signal_to_use = Y1_signal
+            y2_signal_to_use = Y2_signal if Y2_signal is not None else Y1_signal
+        
         # Extract wavelet features for both Y1 and Y2 signals
-        y1_features = self.extract_wavelet_features(Y1_signal)
-        y2_features = self.extract_wavelet_features(Y2_signal)
+        y1_features = self.extract_wavelet_features(y1_signal_to_use)
+        y2_features = self.extract_wavelet_features(y2_signal_to_use)
+        
+        # 🔧 Update EOG charts with scalogram data
+        if self.chart_manager and hasattr(self.chart_manager, 'update_eog_data'):
+            try:
+                # Calculate Y1 and Y2 values for chart
+                current_y1 = np.mean(y1_signal_to_use[-10:]) if len(y1_signal_to_use) > 10 else 0
+                current_y2 = np.mean(y2_signal_to_use[-10:]) if len(y2_signal_to_use) > 10 else 0
+                
+                # Create features dict with scalogram data
+                eog_features = {
+                    'y1': current_y1,
+                    'y2': current_y2,
+                    'y1_features': y1_features,  # Contains scalogram data
+                    'y2_features': y2_features   # Contains scalogram data
+                }
+                
+                # Update charts with scalogram
+                self.chart_manager.update_eog_data(current_y1, current_y2, eog_features)
+                
+            except Exception as e:
+                print(f"⚠️ Error updating EOG charts: {e}")
         
         # Hierarchical classification with fixed thresholds
         movement = self.hierarchical_classifier(y1_features, y2_features)
@@ -358,7 +507,9 @@ class EOGProcessor:
         return (1_000_000 * (np.array(data) - 8388608) * 1.6 / 8388608 / 2).astype(np.int16)
 
     def process_eog_data(self, mental_label, direction_label):
-        """Main EOG processing function - replaces process_eeg_data"""
+        """Main EOG processing function with synchronized chart updates"""
+        current_time = time.time() * 1000  # milliseconds
+        
         # Get raw data and convert to microvolts
         af3_data = self.convert_to_uV(self.decoder.eeg_af3)
         af4_data = self.convert_to_uV(self.decoder.eeg_af4) if len(self.decoder.eeg_af4) > 0 else np.zeros_like(af3_data)
@@ -368,7 +519,12 @@ class EOGProcessor:
             mental_label.config(text="EOG Status: Waiting...")
             return
         
-        # Preprocess signals
+        # � SYNCHRONIZED CHART UPDATES (replaces old immediate updates)
+        # Buffer data for synchronized chart updates
+        self.update_sync_buffer('AF3', af3_data, current_time)
+        self.update_sync_buffer('AF4', af4_data, current_time + 1)  # Slight offset for AF4
+        
+        # Preprocess signals for EOG detection
         af3_filtered = self.preprocess_eog_signal(af3_data)
         af4_filtered = self.preprocess_eog_signal(af4_data)
         
@@ -538,3 +694,189 @@ class EOGProcessor:
             self.tcp_server = None
             self.game_connected = False
             print("🎮 Game TCP Server stopped")
+    
+    # 🧠 ===== ALPHA/BETA BAND PROCESSING METHODS (Legacy EEG) =====
+    
+    def convert_to_uV(self, data):
+        """Convert raw EEG data to microvolts"""
+        return (1_000_000 * (np.array(data) - 8388608) * 1.6 / 8388608 / 2).astype(np.int16)
+
+    def extract_features(self, data, ch_name="EEG", sample_rate=244):
+        """Extract alpha and beta band features from EEG signal"""
+        if len(data) < 2:
+            return {
+                "alpha": 0, "beta": 0, "alpha_ratio": 0, "beta_ratio": 0, 
+                "beta_signal": np.array([]), "alpha_signal": np.array([])
+            }
+
+        def butter_bandpass(lowcut, highcut, fs, order=2):
+            nyquist = 0.5 * fs
+            low = lowcut / nyquist
+            high = highcut / nyquist
+            b, a = butter(order, [low, high], btype='band')
+            return b, a
+
+        def bandpass_filter(data, lowcut, highcut, fs, order=2):
+            b, a = butter_bandpass(lowcut, highcut, fs, order)
+            return lfilter(b, a, data)
+
+        # Extract frequency bands
+        filtered_alpha = bandpass_filter(data, 8, 13, sample_rate)  # Alpha: 8-13 Hz
+        filtered_beta = bandpass_filter(data, 13, 30, sample_rate)  # Beta: 13-30 Hz
+        
+        # Calculate amplitudes (RMS)
+        alpha_amplitude = np.sqrt(np.mean(filtered_alpha ** 2))
+        beta_amplitude = np.sqrt(np.mean(filtered_beta ** 2))
+        
+        # Calculate ratios
+        total_amplitude = alpha_amplitude + beta_amplitude
+        alpha_ratio = alpha_amplitude / total_amplitude if total_amplitude > 0 else 0
+        beta_ratio = beta_amplitude / total_amplitude if total_amplitude > 0 else 0
+
+        print(f"[DEBUG] {ch_name}: alpha_amplitude={alpha_amplitude:.2f} µV, beta_amplitude={beta_amplitude:.2f} µV, "
+              f"alpha_ratio={alpha_ratio:.2f}, beta_ratio={beta_ratio:.2f}")
+        
+        return {
+            "alpha": alpha_amplitude, 
+            "beta": beta_amplitude, 
+            "alpha_ratio": alpha_ratio, 
+            "beta_ratio": beta_ratio,
+            "beta_signal": filtered_beta, 
+            "alpha_signal": filtered_alpha
+        }
+
+    def classify_direction_legacy(self, af3_features, af4_features):
+        """Legacy EEG-based direction classification using alpha/beta bands"""
+        alpha_af3 = af3_features["alpha_ratio"]
+        beta_af3 = af3_features["beta_ratio"]
+        alpha_af4 = af4_features["alpha_ratio"]
+        beta_af4 = af4_features["beta_ratio"]
+        
+        beta_diff = beta_af4 - beta_af3
+        alpha_diff = alpha_af4 - alpha_af3
+
+        self.beta_diff_history.append(beta_diff)
+        std_beta_diff = np.std(list(self.beta_diff_history)) if len(self.beta_diff_history) > 10 else 0.1
+        dynamic_threshold = max(0.02, std_beta_diff)
+
+        print(f"[DEBUG] AF3: alpha={alpha_af3:.3f}, beta={beta_af3:.3f}, AF4: alpha={alpha_af4:.3f}, beta={beta_af4:.3f}, "
+              f"beta_diff={beta_diff:.3f}, threshold={dynamic_threshold:.3f}")
+
+        # Classification logic from legacy code
+        if alpha_af3 < 0.1 and alpha_af4 < 0.1 and beta_af4 < 0.3:
+            return "center"  # No significant activity
+        elif beta_diff > dynamic_threshold and beta_af4 > 0.05:
+            return "right"  # Right hemisphere activity
+        elif beta_diff < -dynamic_threshold and beta_af3 > 0.05:
+            return "left"   # Left hemisphere activity
+        elif (alpha_af3 + alpha_af4) > 1.0 and abs(alpha_diff) < 0.2:
+            return "up"     # Balanced high alpha
+        else:
+            return "down"   # Default
+
+    def calculate_stress_level(self):
+        """Calculate stress level from PPG data"""
+        ppg_data = np.array([x for x in self.decoder.ppg if x < 1000000])
+        if len(ppg_data) == 0:
+            return 0.05
+        stress_level = np.std(ppg_data) / 10000
+        return min(max(1 - stress_level * 0.2, 0.05), 0.5)
+
+    def process_eeg_legacy(self, mental_label=None, direction_label=None):
+        """
+        Legacy EEG processing with alpha/beta band analysis
+        Can be used alongside or instead of EOG detection
+        """
+        # Convert raw data to microvolts
+        af3_data = self.convert_to_uV(self.decoder.eeg_af3)
+        af4_data = self.convert_to_uV(self.decoder.eeg_af4) if len(self.decoder.eeg_af4) > 0 else np.zeros_like(af3_data)
+        
+        # Extract alpha/beta features
+        af3_features = self.extract_features(af3_data, ch_name="AF3")
+        af4_features = self.extract_features(af4_data, ch_name="AF4")
+        ppg_data = np.array(self.decoder.ppg)
+
+        # Smoothing for AF4 beta
+        window_size = 300
+        if len(af4_data) >= window_size:
+            af4_beta_smooth = np.mean([
+                self.extract_features(af4_data[i:i+window_size], ch_name="AF4")["beta"] 
+                for i in range(0, len(af4_data) - window_size + 1, window_size)
+            ][-1:])  # Take last window
+        else:
+            af4_beta_smooth = af4_features["beta"]
+
+        # Signal quality check
+        signal_quality = np.mean(np.abs(af3_data)) + np.mean(np.abs(af4_data))
+        print(f"[DEBUG] Signal quality: {signal_quality:.2f}, AF4 beta smooth: {af4_beta_smooth:.3f}")
+
+        # Direction classification
+        if signal_quality < 0.5 or len(self.decoder.eeg_af4) < 100:
+            direction = "center"
+        elif af4_beta_smooth > 0.3:
+            direction = self.classify_direction_legacy(af3_features, af4_features)
+            beta_diff = af4_features["beta_ratio"] - af3_features["beta_ratio"]
+            self.beta_diff_buffer.append(beta_diff)
+            
+            # Stability check
+            if len(self.directions) > 2 and self.directions[-1] == self.directions[-2]:
+                self.directions.append(direction)
+            else:
+                self.directions.append("center")
+        else:
+            direction = "center"
+
+        # Mental state from PPG
+        stress_level = np.std(ppg_data) / 10000 if len(ppg_data) > 0 else 0.5
+        self.mental_state = "Stressed" if stress_level > 0.1 else "Calm"
+        
+        # Update UI labels if provided
+        if mental_label:
+            mental_label.config(text=f"Mental State: {self.mental_state}")
+        if direction_label:
+            direction_label.config(text=f"Direction: {direction if direction != 'center' else 'Stopped'}")
+        
+        print(f"[DEBUG] Legacy EEG Direction: {direction}")
+
+        # Update charts
+        self.update_count += 1
+        if self.update_count % 2 == 0 and self.chart_manager:
+            self.chart_manager.update_chart(
+                af3_features["alpha"], af4_features["alpha"], 
+                af3_features["beta"], af4_features["beta"]
+            )
+        
+        return direction
+
+    def hybrid_detection(self, use_eeg=True, use_eog=True):
+        """
+        Hybrid detection combining both EEG (alpha/beta) and EOG (eye movement)
+        Returns the most confident detection
+        """
+        results = {}
+        
+        if use_eeg and len(self.decoder.eeg_af3) > 100:
+            eeg_direction = self.process_eeg_legacy()
+            results['eeg'] = eeg_direction
+        
+        if use_eog and len(self.decoder.eeg_af3) > self.window_size:
+            # Use standard EOG detection
+            af3_data = self.convert_to_uV(self.decoder.eeg_af3)
+            af4_data = self.convert_to_uV(self.decoder.eeg_af4) if len(self.decoder.eeg_af4) > 0 else af3_data
+            
+            eog_direction = self.detect_eye_movement_wavelet({
+                'AF3': af3_data[-self.window_size:],
+                'AF4': af4_data[-self.window_size:]
+            })
+            results['eog'] = eog_direction
+        
+        # Combine results (EOG takes priority for eye movements, EEG for mental states)
+        if 'eog' in results and results['eog'] in ['left', 'right', 'up', 'down', 'blink']:
+            final_direction = results['eog']
+        elif 'eeg' in results:
+            final_direction = results['eeg']
+        else:
+            final_direction = 'center'
+        
+        print(f"[HYBRID] EEG: {results.get('eeg', 'N/A')}, EOG: {results.get('eog', 'N/A')} → Final: {final_direction}")
+        return final_direction
